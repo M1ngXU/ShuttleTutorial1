@@ -14,10 +14,9 @@ use crate::state::ManagedState;
 pub async fn index_authorized(
 	_state: &State<ManagedState>,
 	_token: AuthorizedDiscord,
-) -> RawHtml<String> {
-	RawHtml(format!(
-		r#"<html><form method="post"><input type="hidden" name="_method" value="put"><label for="channel_id">Channel id:</label><br><input type="number" id="channel_id" name="channel_id"><br><label for="message">Message:</label><br><input type="text" id="message" name="message"><br><input type="submit"></form></html>"#
-	))
+) -> RawHtml<&'static str> {
+	RawHtml(r#"<html><form method="post"><input type="hidden" name="_method" value="put"><label for="channel_id">Channel id:</label><br><input type="number" id="channel_id" name="channel_id"><br><label for="message">Message:</label><br><input type="text" id="message" name="message"><br><input type="submit"></form></html>"#
+	)
 }
 
 #[get("/", rank = 99)]

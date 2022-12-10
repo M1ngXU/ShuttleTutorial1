@@ -19,7 +19,7 @@ impl Bot {
 			channel_id: u64,
 			message:    String,
 		}
-		let ref mut connection = self.database_pool.acquire().await.context("Failed to acquire connection.")?; {
+		let mut connection = self.database_pool.acquire().await.context("Failed to acquire connection.")?; {
 			if let Ok(greeting) = query_as!(
 				Greeting,
 				"\
@@ -29,7 +29,7 @@ impl Bot {
                 ",
 				new_member.guild_id.0
 			)
-			.fetch_one(connection)
+			.fetch_one(&mut connection)
 			.await
 			{
 				ChannelId(greeting.channel_id)
