@@ -1,0 +1,44 @@
+<html>
+
+<body>
+    <label for="guild">Select guild: </label>
+    <select name="guild" onchange="updateChannelDropdown(this);">
+        <option value="">Select ...</option>
+        {% for guild in guilds %}
+        <option value="{{guild.id}}">{{guild.name}}</option>
+        {% endfor %}
+    </select>
+    {% for guild in guilds %}
+    <form method="post" class="guild hide" id="guild-{{guild.id}}">
+        <input type="hidden" name="_method" value="put">
+        <label for="channel_id">Channel id:</label>
+        <br>
+        <select name="channel_id">
+            {% for channel in guild.channels %}
+            <option value="{{channel.id}}">{{channel.name}}</option>
+            {% endfor %}
+        </select>
+        <br>
+        <label for="message">Message:</label>
+        <br>
+        <input type="text" name="message">
+        <br>
+        <input type="submit">
+    </form>
+    {% endfor %}
+</body>
+<style>
+    .hide {
+        display: none;
+    }
+</style>
+<script>
+    function updateChannelDropdown(e) {
+        {
+            document.querySelectorAll('.guild').forEach(e => e.classList.add('hide'));
+            document.getElementById('guild-' + e.value).classList.remove('hide');
+        }
+    }
+</script>
+
+</html>

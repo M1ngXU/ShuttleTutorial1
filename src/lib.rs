@@ -16,6 +16,7 @@ use index::*;
 use managed_state::ManagedStateInner;
 use rocket::tokio::spawn;
 use rocket::Config;
+use rocket_dyn_templates::Template;
 use serenity::prelude::GatewayIntents;
 use serenity::Client;
 use shuttle_secrets::SecretStore;
@@ -45,6 +46,7 @@ async fn rocket(
 				.context("No `ROCKET_SECRET_KEY` in `Secrets.toml`.")?,
 		)),
 	)
+	.attach(Template::fairing())
 	.manage(ManagedStateInner::new(
 		secret_store,
 		database_pool,

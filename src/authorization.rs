@@ -2,14 +2,17 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use rand::Rng;
+use reqwest::Client;
 use rocket::http::{Cookie, CookieJar, Status};
 use rocket::request::{FromRequest, Outcome};
-use rocket::response::content::RawHtml;
 use rocket::response::status::Custom;
 use rocket::response::Redirect;
 use rocket::serde::Deserialize;
 use rocket::Request;
+use rocket_dyn_templates::{context, Template};
 use shuttle_service::Context;
+use sqlx::pool::PoolConnection;
+use sqlx::MySql;
 use url::Url;
 
 use crate::error::ResponseResult;
@@ -40,8 +43,7 @@ pub async fn authorize(
 	let authorization_state = generate_state();
 
 	query!(
-		"\
-			INSERT INTO DiscordAuthorizationState (Id, Ip) VALUES (?, ?) ",
+		"INSERT INTO DiscordAuthorizationState (Id, Ip) VALUES (?, ?)",
 		&authorization_state,
 		client_ip.to_string()
 	)
@@ -61,41 +63,44 @@ pub async fn authorize(
 	Ok(Redirect::temporary(url.to_string()))
 }
 
-#[get("/try_authorize?<code>&<state>")]
-pub async fn try_authorize(
-	cookies: &CookieJar<'_>,
-	managed_state: &ManagedState,
-	code: &str,
+async fn verify_state(
+	mut connection: PoolConnection<MySql>,
 	state: &str,
 	client_ip: SocketAddr,
-) -> ResponseResult<Result<RawHtml<String>, Custom<&'static str>>> {
-	let mut connection = managed_state.acquire_connection().await?;
+) -> ResponseResult<bool> {
 	struct Ip {
 		ip: String,
 	}
-	match query_as!(
+	let is_valid = match query_as!(
 		Ip,
-		"\
-			SELECT Ip as ip FROM DiscordAuthorizationState WHERE Id = ?",
+		"SELECT Ip as ip FROM DiscordAuthorizationState WHERE Id = ?",
 		state
 	)
 	.fetch_one(&mut connection)
 	.await
 	{
-		Ok(Ip { ip }) if ip == client_ip.to_string() => {}
-		Ok(_) => return Ok(Err(Custom(Status::Unauthorized, "Ip mismatch"))),
-		_ => return Ok(Err(Custom(Status::Unauthorized, "Unknown id."))),
+		Ok(Ip { ip }) if ip == client_ip.to_string() => {
+			query!("DELETE FROM DiscordAuthorizationState WHERE Id = ?", state)
+				.execute(&mut connection)
+				.await?;
+			true
+		}
+		_ => false,
 	};
-	query!("DELETE FROM DiscordAuthorizationState WHERE Id = ?", state)
-		.execute(&mut connection)
-		.await?;
 
+	Ok(is_valid)
+}
+
+async fn get_access_token(
+	managed_state: &ManagedState,
+	client: &Client,
+	code: &str,
+) -> ResponseResult<Result<String, Custom<&'static str>>> {
 	let mut url: Url = DISCORD_BASE_URL.parse().unwrap();
 	url.path_segments_mut()
 		.unwrap()
 		.push("oauth2")
 		.push("token");
-	let client = reqwest::Client::new();
 
 	let mut params = HashMap::new();
 	params.insert("client_id", managed_state.get_client_id());
@@ -129,12 +134,16 @@ pub async fn try_authorize(
 		)));
 	}
 	if &oauth_response.scope != "identify" {
-		return Ok(Err(Custom(
+		Ok(Err(Custom(
 			Status::BadRequest,
 			"Only accepting `identify` as the scope.",
-		)));
+		)))
+	} else {
+		Ok(Ok(oauth_response.access_token))
 	}
+}
 
+async fn get_user_id(client: &Client, access_token: &str) -> ResponseResult<String> {
 	#[derive(Deserialize)]
 	#[serde(crate = "rocket::serde")]
 	struct UserId {
@@ -142,23 +151,47 @@ pub async fn try_authorize(
 	}
 	let mut url: Url = DISCORD_BASE_URL.parse().unwrap();
 	url.path_segments_mut().unwrap().push("users").push("@me");
-	let UserId { id } = &client
+	let UserId { id } = client
 		.get(url)
-		.bearer_auth(&oauth_response.access_token)
+		.bearer_auth(access_token)
 		.send()
 		.await
 		.context("Failed to get user by authorization token.")?
 		.json()
 		.await
 		.context("Failed read id from discord identity response.")?;
-	cookies.add_private(Cookie::build("id", id.to_string()).permanent().finish());
-	let redirect = uri!(index_authorized).to_string();
-	// TODO put into tera file
-	Ok(Ok(RawHtml(format!(
-		"<html><head><meta http-equiv=\"refresh\" content=\"5; url={redirect}\"></head><body><a \
-		 href=\"{redirect}\">Click here if you don't get redirected \
-		 ...</a></body><script>window.location.href = '{redirect}';</script></html>"
-	))))
+	Ok(id)
+}
+
+#[get("/try_authorize?<code>&<state>")]
+pub async fn try_authorize(
+	cookies: &CookieJar<'_>,
+	managed_state: &ManagedState,
+	code: &str,
+	state: &str,
+	client_ip: SocketAddr,
+) -> ResponseResult<Result<Template, Custom<&'static str>>> {
+	if !verify_state(managed_state.acquire_connection().await?, state, client_ip).await? {
+		return Ok(Err(Custom(
+			Status::Unauthorized,
+			"This state is not linked to your ip address.",
+		)));
+	}
+
+	let client = Client::new();
+
+	let access_token = match get_access_token(managed_state, &client, code).await {
+		Ok(Ok(access_token)) => access_token,
+		e => return e.map(|r| r.map(|_| unreachable!())),
+	};
+
+	let user_id = get_user_id(&client, &access_token).await?;
+
+	cookies.add_private(Cookie::build("id", user_id).permanent().finish());
+	Ok(Ok(Template::render(
+		"redirect_index",
+		context! {redirect_url: uri!(index_authorized).to_string()},
+	)))
 }
 
 // todo in doc
@@ -171,12 +204,10 @@ impl<'r> FromRequest<'r> for AuthorizedDiscord {
 
 	async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
 		let cookies = request.cookies();
-		match cookies.get_private("id").map(|c| c.to_string()) {
-			Some(id) if id.parse::<u64>().is_ok() => Outcome::Success(Self {
-				id: id.parse().unwrap(),
-			}),
-			c => {
-				if c.is_some() {
+		match cookies.get_private("id").map(|c| c.value().parse().ok()) {
+			Some(Some(id)) => Outcome::Success(Self { id }),
+			o => {
+				if o.is_some() {
 					cookies.remove_private(Cookie::named("id"));
 				}
 				Outcome::Forward(())
