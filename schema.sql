@@ -8,5 +8,3 @@ CREATE TABLE IF NOT EXISTS DiscordAuthorizationState(
     Ip VARCHAR(20) NOT NULL
 );
 TRUNCATE TABLE DiscordAuthorizationState;
-
-SELECT * FROM DiscordGreeting;

@@ -187,6 +187,7 @@ pub async fn try_authorize(
 
 	let user_id = get_user_id(&client, &access_token).await?;
 
+	// permanent cookies, default is 1 week
 	cookies.add_private(Cookie::build("id", user_id).permanent().finish());
 	Ok(Ok(Template::render(
 		"redirect_index",
@@ -194,7 +195,6 @@ pub async fn try_authorize(
 	)))
 }
 
-// todo in doc
 pub struct AuthorizedDiscord {
 	pub id: u64,
 }

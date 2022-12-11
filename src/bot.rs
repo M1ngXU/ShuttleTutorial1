@@ -15,7 +15,6 @@ impl Bot {
 	}
 
 	async fn greet(&self, ctx: Context, new_member: Member) -> Result<(), CustomError> {
-		println!("{new_member:?}");
 		struct Greeting {
 			channel_id: u64,
 			message:    String,
@@ -26,16 +25,19 @@ impl Bot {
 			.await
 			.context("Failed to acquire connection.")?;
 		{
-			if let Ok(greeting) = query_as!(
+			#[rustfmt::skip]
+			let query = query_as!(
 				Greeting,
 				"\
-                    SELECT ChannelId as channel_id, Message as message FROM DiscordGreeting WHERE \
-				 GuildId = ? ",
+					SELECT ChannelId as channel_id, Message as message \
+					FROM DiscordGreeting \
+					WHERE GuildId = ?\
+				",
 				new_member.guild_id.0
 			)
 			.fetch_one(&mut connection)
-			.await
-			{
+			.await;
+			if let Ok(greeting) = query {
 				ChannelId(greeting.channel_id)
 					.say(ctx.http(), greeting.message)
 					.await

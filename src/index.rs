@@ -4,7 +4,7 @@ use rocket::response::Redirect;
 use rocket_dyn_templates::{context, Template};
 use serenity::model::prelude::{Channel, ChannelId};
 
-use crate::authorization::{AuthorizedDiscord, *};
+use crate::authorization::*;
 use crate::error::ResponseResult;
 use crate::managed_state::ManagedState;
 use crate::utils::is_admin;
