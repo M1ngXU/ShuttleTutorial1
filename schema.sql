@@ -1,5 +1,12 @@
-CREATE TABLE IF NOT EXISTS DiscordGreetings(
+CREATE TABLE IF NOT EXISTS DiscordGreeting(
     GuildId BIGINT UNSIGNED NOT NULL PRIMARY KEY,
     ChannelId BIGINT UNSIGNED NOT NULL,
     Message TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS DiscordAuthorizationState(
+    Id VARCHAR(20) NOT NULL PRIMARY KEY,
+    Ip VARCHAR(20) NOT NULL
+);
+TRUNCATE TABLE DiscordAuthorizationState;
+
+SELECT * FROM DiscordGreeting;

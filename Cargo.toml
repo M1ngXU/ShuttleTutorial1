@@ -9,21 +9,24 @@ build = "build.rs"
 
 [build-dependencies]
 toml = "0.5.9"
-sqlx = { version = "0.6.2", features = ["runtime-tokio-native-tls", "mysql"] }
-tokio = {version = "1", features = ["macros"]} # shuttle requires not the latest version
+sqlx = { version = "*", features = ["runtime-tokio-native-tls", "mysql"] }
+tokio = { version = "*", features = ["macros"] }
 
 [dependencies]
 shuttle-service = { version = "0.7.2", features = ["web-rocket"] }
-shuttle-aws-rds = { version = "0.7.2", features = ["mariadb"]}
+shuttle-aws-rds = { version = "0.7.2", features = ["mariadb"] }
 sqlx = { version = "0.6.2", features = ["runtime-tokio-native-tls", "mysql"] }
-rocket = {version = "0.5.0-rc.2", features = ["secrets"]}
+rocket = { version = "0.5.0-rc.2", features = ["secrets"] }
 shuttle-secrets = "0.7.0"
 url = "2.3.1"
-reqwest = {version = "0.11.13", features = ["json"]}
-serde_json = "1.0.89"
-serenity = {version = "0.11", default-features = false, features = ["rustls_backend",  "builder",
+reqwest = { version = "0.11.13", features = ["json"] }
+rand = "0.8.5"
+serenity = { version = "0.11", default-features = false, features = [
+    "rustls_backend",
+    "builder",
     "cache",
     "client",
     "gateway",
     "model",
-    "http",]}
+    "http",
+] }

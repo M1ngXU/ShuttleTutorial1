@@ -7,19 +7,20 @@ mod authorization;
 mod bot;
 mod error;
 mod index;
-mod state;
+mod managed_state;
+mod utils;
 
 use authorization::*;
 use bot::Bot;
 use index::*;
-use rocket::Config;
+use managed_state::ManagedStateInner;
 use rocket::tokio::spawn;
+use rocket::Config;
 use serenity::prelude::GatewayIntents;
 use serenity::Client;
 use shuttle_secrets::SecretStore;
 use shuttle_service::Context;
 use sqlx::MySqlPool;
-use state::ManagedState;
 
 #[shuttle_service::main]
 async fn rocket(
@@ -44,7 +45,7 @@ async fn rocket(
 				.context("No `ROCKET_SECRET_KEY` in `Secrets.toml`.")?,
 		)),
 	)
-	.manage(ManagedState::new(
+	.manage(ManagedStateInner::new(
 		secret_store,
 		database_pool,
 		Client::builder(&bot_token, GatewayIntents::all())

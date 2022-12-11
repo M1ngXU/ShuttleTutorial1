@@ -1,40 +1,95 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
-use rocket::http::{Cookie, CookieJar};
+use rand::Rng;
+use rocket::http::{Cookie, CookieJar, Status};
 use rocket::request::{FromRequest, Outcome};
 use rocket::response::content::RawHtml;
+use rocket::response::status::Custom;
 use rocket::response::Redirect;
 use rocket::serde::Deserialize;
-use rocket::{Request, State};
+use rocket::Request;
 use shuttle_service::Context;
 use url::Url;
 
 use crate::error::ResponseResult;
 use crate::index::*;
-use crate::state::ManagedState;
+use crate::managed_state::ManagedState;
 
 const DISCORD_BASE_URL: &str = "https://discord.com/api/v10";
 
-#[get("/authorize")]
-pub async fn authorize(state: &State<ManagedState>) -> Redirect {
-	let mut url: Url = "https://discord.com/oauth2/authorize".parse().unwrap();
-	url.query_pairs_mut()
-        .append_pair("response_type", "code")
-        .append_pair("client_id", &state.get_client_id())
-        .append_pair("scope", "identify")
-        // TODO add state for security
-        .append_pair("redirect_uri", &state.get_redirect_uri())
-        .append_pair("prompt", "none");
+fn generate_state() -> String {
+	const AUTHORIZATION_STATE_SIZE: usize = 20;
+	const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-	Redirect::temporary(url.to_string())
+	let mut authorization_state = String::with_capacity(AUTHORIZATION_STATE_SIZE);
+
+	let mut rng = rand::thread_rng();
+	for _ in 0..AUTHORIZATION_STATE_SIZE {
+		authorization_state.push(BASE62[rng.gen::<usize>() % BASE62.len()] as char);
+	}
+
+	authorization_state
 }
 
-#[get("/try_authorize?<code>")]
+#[get("/authorize")]
+pub async fn authorize(
+	managed_state: &ManagedState,
+	client_ip: SocketAddr,
+) -> ResponseResult<Redirect> {
+	let authorization_state = generate_state();
+
+	query!(
+		"\
+			INSERT INTO DiscordAuthorizationState (Id, Ip) VALUES (?, ?) ",
+		&authorization_state,
+		client_ip.to_string()
+	)
+	.execute(&mut managed_state.acquire_connection().await?)
+	.await
+	.context("Failed to insert authorization id.")?;
+
+	let mut url: Url = "https://discord.com/oauth2/authorize".parse().unwrap();
+	url.query_pairs_mut()
+		.append_pair("response_type", "code")
+		.append_pair("client_id", &managed_state.get_client_id())
+		.append_pair("scope", "identify")
+		.append_pair("state", &authorization_state)
+		.append_pair("redirect_uri", &managed_state.get_redirect_uri())
+		.append_pair("prompt", "none");
+
+	Ok(Redirect::temporary(url.to_string()))
+}
+
+#[get("/try_authorize?<code>&<state>")]
 pub async fn try_authorize(
 	cookies: &CookieJar<'_>,
-	state: &State<ManagedState>,
+	managed_state: &ManagedState,
 	code: &str,
-) -> ResponseResult<RawHtml<String>> {
+	state: &str,
+	client_ip: SocketAddr,
+) -> ResponseResult<Result<RawHtml<String>, Custom<&'static str>>> {
+	let mut connection = managed_state.acquire_connection().await?;
+	struct Ip {
+		ip: String,
+	}
+	match query_as!(
+		Ip,
+		"\
+			SELECT Ip as ip FROM DiscordAuthorizationState WHERE Id = ?",
+		state
+	)
+	.fetch_one(&mut connection)
+	.await
+	{
+		Ok(Ip { ip }) if ip == client_ip.to_string() => {}
+		Ok(_) => return Ok(Err(Custom(Status::Unauthorized, "Ip mismatch"))),
+		_ => return Ok(Err(Custom(Status::Unauthorized, "Unknown id."))),
+	};
+	query!("DELETE FROM DiscordAuthorizationState WHERE Id = ?", state)
+		.execute(&mut connection)
+		.await?;
+
 	let mut url: Url = DISCORD_BASE_URL.parse().unwrap();
 	url.path_segments_mut()
 		.unwrap()
@@ -43,92 +98,86 @@ pub async fn try_authorize(
 	let client = reqwest::Client::new();
 
 	let mut params = HashMap::new();
-	params.insert("client_id", state.get_client_id());
-	params.insert("client_secret", state.get_client_secret());
+	params.insert("client_id", managed_state.get_client_id());
+	params.insert("client_secret", managed_state.get_client_secret());
 	params.insert("grant_type", "authorization_code".to_string());
 	params.insert("code", code.to_string());
-	params.insert("redirect_uri", state.get_redirect_uri());
+	params.insert("redirect_uri", managed_state.get_redirect_uri());
 
 	#[derive(Deserialize)]
 	#[serde(crate = "rocket::serde")]
 	struct OAuthResponse {
 		access_token: String,
-		token_type:   String,
+		token_type: String,
+		scope: String,
 	}
 
-	let response = client
+	let oauth_response: OAuthResponse = client
 		.post(url)
 		.form(&params)
 		.send()
 		.await
 		.context("Failed to get tokens by code.")?
-		.text()
+		.json()
 		.await
 		.context("Failed to read response of tokens.")?;
-	let Ok(oauth_response) = serde_json::from_str::<OAuthResponse>(&response) else {Err(format!("Failed to read token information from response.\nResponse: {response}"))?};
 	if &oauth_response.token_type != "Bearer" {
-		Err(format!(
-			"Only accepting bearer tokens, got `{}`.",
-			oauth_response.token_type
-		))?;
+		error!("Got {} instead of Bearer token.", oauth_response.token_type);
+		return Ok(Err(Custom(
+			Status::BadRequest,
+			"Only accepting `Bearer` tokens.",
+		)));
+	}
+	if &oauth_response.scope != "identify" {
+		return Ok(Err(Custom(
+			Status::BadRequest,
+			"Only accepting `identify` as the scope.",
+		)));
 	}
 
+	#[derive(Deserialize)]
+	#[serde(crate = "rocket::serde")]
+	struct UserId {
+		id: String,
+	}
 	let mut url: Url = DISCORD_BASE_URL.parse().unwrap();
 	url.path_segments_mut().unwrap().push("users").push("@me");
-	let id = &client
+	let UserId { id } = &client
 		.get(url)
 		.bearer_auth(&oauth_response.access_token)
 		.send()
 		.await
 		.context("Failed to get user by authorization token.")?
-		.json::<serde_json::Value>()
+		.json()
 		.await
-		.context("Failed read id from discord identity response.")?["id"];
-	let id = id
-		.as_str()
-		.ok_or_else(|| format!("Id (`{id}`) is not a string."))?;
-	cookies.add_private(
-		Cookie::build("token", oauth_response.access_token)
-			.permanent()
-			.finish(),
-	);
+		.context("Failed read id from discord identity response.")?;
 	cookies.add_private(Cookie::build("id", id.to_string()).permanent().finish());
 	let redirect = uri!(index_authorized).to_string();
 	// TODO put into tera file
-	Ok(RawHtml(format!(
+	Ok(Ok(RawHtml(format!(
 		"<html><head><meta http-equiv=\"refresh\" content=\"5; url={redirect}\"></head><body><a \
 		 href=\"{redirect}\">Click here if you don't get redirected \
 		 ...</a></body><script>window.location.href = '{redirect}';</script></html>"
-	)))
+	))))
 }
 
+// todo in doc
 pub struct AuthorizedDiscord {
-	pub id:    u64,
-	pub token: String,
+	pub id: u64,
 }
-
-const PRIVATE_COOKIES: [&str; 2] = ["token", "id"];
-
 #[async_trait]
 impl<'r> FromRequest<'r> for AuthorizedDiscord {
 	type Error = ();
 
 	async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
 		let cookies = request.cookies();
-		match PRIVATE_COOKIES.map(|key| cookies.get_private(key).map(|c| c.value().to_string())) {
-			// TODO
-			[Some(token), Some(id)] if id.parse::<u64>().is_ok() => Outcome::Success(Self {
-				token,
+		match cookies.get_private("id").map(|c| c.to_string()) {
+			Some(id) if id.parse::<u64>().is_ok() => Outcome::Success(Self {
 				id: id.parse().unwrap(),
 			}),
-			maybe_nonexisting_cookies => {
-				for key in maybe_nonexisting_cookies
-					.iter()
-					.enumerate()
-					.filter(|(_i, value)| value.is_some())
-					.map(|(i, _value)| PRIVATE_COOKIES[i])
-				{
-					cookies.remove_private(Cookie::named(key))
+			c => {
+				if c.is_some() {
+					cookies.remove_private(Cookie::named("id"));
 				}
 				Outcome::Forward(())
 			}

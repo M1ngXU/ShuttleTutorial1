@@ -18,7 +18,7 @@ fn initialize_database(secrets: &Value) {
 		"Couldn't fine `DATABASE_URL_LOCAL` (if running locally)/`DATABASE_URL_DEPLOY` (if \
 		 deploying) in `Secrets.toml`.",
 	);
-	println!("cargo:rustc-env=DATABASE_URL={database_url}",);
+	println!("cargo:rustc-env=DATABASE_URL={database_url}");
 
 	run_schema(database_url);
 }
