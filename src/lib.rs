@@ -31,7 +31,7 @@ async fn rocket(
 		.get("DISCORD_BOT_TOKEN")
 		.context("No `DISCORD_BOT_TOKEN` in `Shuttle.toml`.")?;
 
-	let mut bot = Client::builder(&bot_token, GatewayIntents::all())
+	let mut bot = Client::builder(&bot_token, GatewayIntents::non_privileged() | GatewayIntents::GUILD_MEMBERS)
 		.event_handler(Bot::new(database_pool.clone()))
 		.await
 		.context("Failed to create discord bot.")?;
@@ -49,7 +49,7 @@ async fn rocket(
 	.manage(ManagedStateInner::new(
 		secret_store,
 		database_pool,
-		Client::builder(&bot_token, GatewayIntents::all())
+		Client::builder(&bot_token, GatewayIntents::non_privileged() | GatewayIntents::GUILD_MEMBERS)
 			.await
 			.context("Failed to create discord bot.")?,
 	))
