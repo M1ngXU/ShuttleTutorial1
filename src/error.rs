@@ -14,6 +14,6 @@ impl<'r> Responder<'r, 'static> for Error {
 
 impl<T: std::fmt::Debug> From<T> for Error {
 	fn from(value: T) -> Self {
-		Self(format!("{:?}", value))
+		Self(format!("{value:?}"))
 	}
 }

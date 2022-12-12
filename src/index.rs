@@ -2,12 +2,24 @@ use rocket::form::Form;
 use rocket::response::status::BadRequest;
 use rocket::response::Redirect;
 use rocket_dyn_templates::{context, Template};
-use serenity::model::prelude::{Channel, ChannelId};
+use serenity::http::Http;
+use serenity::model::prelude::{Channel, ChannelId, Member};
 
 use crate::authorization::*;
 use crate::error::ResponseResult;
 use crate::managed_state::ManagedState;
-use crate::utils::is_admin;
+
+pub async fn is_admin(http: &Http, member: &Member) -> Result<bool, BadRequest<&'static str>> {
+	let Ok(guild) = member.guild_id.to_partial_guild(http).await else {return Err(BadRequest(Some("Couldn't find guild.")))};
+	Ok(guild.owner_id == member.user.id
+		|| member.roles.iter().any(|role_id| {
+			guild
+				.roles
+				.get(role_id)
+				.filter(|role| role.permissions.administrator())
+				.is_some()
+		}))
+}
 
 #[get("/")]
 pub async fn index_authorized(

@@ -8,7 +8,6 @@ mod bot;
 mod error;
 mod index;
 mod managed_state;
-mod utils;
 
 use authorization::*;
 use bot::Bot;
